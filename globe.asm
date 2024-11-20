@@ -571,14 +571,14 @@ pal_gradient:
 ; ******************************************************************
 ; * BSS segment (uninitialised data)
 ; * This is not stored in the executable.
-; * TODO: add .bss and create vlink script
 ; ******************************************************************
+
+.bss
 
 ; ******************************************************************
 ; * Sine table with 16384 entries in {s1.16} fixed point format.
 ; ******************************************************************
 
-.p2align 8
 sinus_table_no_adr:
     .skip Sinus_TableSize*4
 
@@ -589,7 +589,6 @@ sinus_table_no_adr:
 ; * contains the y position of the dot {s15.16}
 ; * contains the radius of the ball at this y position (s15.16)
 
-.p2align 8
 dot_array_no_adr:
     .skip numdots*4*3           ; {doyx, doty, dotr}
 
