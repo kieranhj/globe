@@ -47,6 +47,10 @@
 .equ Screen_Stride,         Screen_Width/Screen_PixelsPerByte
 .equ Screen_Bytes,          Screen_Stride*Screen_Height
 
+.equ KeyBit_Escape,         0
+.equ KeyBit_Z,              1
+.equ KeyBit_X,              2
+
 ; Define swis and other values used by RISCOS.
 
 .include "swis.h.asm"
@@ -144,17 +148,24 @@ main:
     cmp r3, #16
     bne .2
 
-	; Claim the Event vector
+    ; Claim the Event vector
 
-	mov r0, #EventV
-	adr r1, event_handler
-	mov r2, #0
-	swi OS_AddToVector
+    mov r0, #EventV
+    adr r1, event_handler
+    mov r2, #0
+    swi OS_AddToVector
 
-	; Enable Vsync event
-	mov r0, #OSByte_EventEnable
-	mov r1, #Event_VSync
-	SWI OS_Byte
+    ; Enable Vsync event
+
+    mov r0, #OSByte_EventEnable
+    mov r1, #Event_VSync
+    SWI OS_Byte
+
+    ; Enable key pressed event.
+
+    mov r0, #OSByte_EventEnable
+    mov r1, #Event_KeyPressed
+    SWI OS_Byte
 
     ; First we wait for 'vsync' so we are synchronised
 
@@ -184,17 +195,19 @@ mainloop:
 
 plotdotloop:
 
-    ; Get a dot
+    ; Get next dot from the array
 
-    ldmia r10!, {r5-r7}         ; read dotx, doty, dotr
+    ldmia r10!, {r5-r7}         ; read {dotx, doty, dotr}
 
     add r0, r5, r8              ; x = dotx + angle      {s15.16}
 
-    ; Calculate colour.
+    ; Calculate its colour
 
     sub r4, r0, #64<<16         ; add quarter turn      {s15.16}
     mov r4, r4, lsr #20         ; [0,255]               {s15.16}
     and r4, r4, #0xf            ;  -> [0,15]            {4.0}
+
+    ; Calculate x position
 
     ; R0=sin(x)
 
@@ -207,6 +220,8 @@ plotdotloop:
     mov r0, r0, asr #8          ; sin(x)                {s7.8}
     mov r7, r7, asr #8          ; dotr                  {s7.8}
     mul r0, r7, r0              ; r0 = sin(x) * dotr    {s15.16}
+
+    ; Convert into screen coordinates
 
     add r5, r0, #centrex<<16    ; add centre of globe
     add r6, r6, #centrey<<16
@@ -222,11 +237,15 @@ plotdotloop:
 
     ; Plot a pixel in MODE 9
 
-    ldrb r1, [r3]               ; load byte from screen
     tst r5, #1                  ; left or right pixel in byte?
-    andeq r1, r1, #0xF0            ; mask out left hand pixel
+
+    ; Interesting performance note!
+    ; This load instruction is faster if aligned PC & 0xc == 4...
+
+    ldrb r1, [r3]               ; load byte from screen
+    andeq r1, r1, #0xF0         ; mask out left hand pixel
     orreq r1, r1, r4            ; mask in colour as left hand pixel
-    andne r1, r1, #0x0F            ; mask out right hand pixel
+    andne r1, r1, #0x0F         ; mask out right hand pixel
     orrne r1, r1, r4, lsl #4    ; mask in colour as right hand pixel
     strb r1, [r3]               ; store byte to screen
 
@@ -280,17 +299,6 @@ plotdotloop:
 
     bl get_screen_addr
 
-    ; Exit if Escape is pressed
-
-    mov r0, #OSByte_ReadKey
-    mov r1, #IKey_Escape
-    mov r2, #0xff
-    swi OS_Byte
-    
-    cmp r1, #0xff
-    cmpeq r2, #0xff
-    beq exit
-    
     .if debugrasters
     mov r0, #24             ; border
     mov r4, #0x00ff0000     ; blue
@@ -320,22 +328,47 @@ clsloop:
     subs r10, r10, #1
     bne clsloop
 
-    ; TODO: keypresses
+    ; Get mask of key bits that are both pressed and changed
 
-    b mainloop
+    ldr r0, keyboard_pressed_mask
+    ldr r2, keyboard_prev_mask
+    mvn r2, r2                ; ~old
+    and r2, r0, r2            ; new & ~old        ; diff bits
+    str r0, keyboard_prev_mask
+    and r4, r2, r0            ; diff bits & key down bits
+
+    ; Update speed according to pressed keys
+
+    ldr r0, speed
+    tst r4, #1<<KeyBit_Z
+    subne r0, r0, #1<<14     ; in 0.25 increments
+    tst r4, #1<<KeyBit_X
+    addne r0, r0, #1<<14
+    str r0, speed
+
+    ; Exit if Escape is pressed
+
+    tst r4, #1<<KeyBit_Escape
+    beq mainloop
 
 exit:
-	; Disable vsync event
+    ; Disable key press event
 
-	mov r0, #OSByte_EventDisable
-	mov r1, #Event_VSync
-	swi OS_Byte
+    mov r0, #OSByte_EventDisable
+    mov r1, #Event_KeyPressed
+    swi OS_Byte
 
-	; Release our event handler
-	mov r0, #EventV
-	adr r1, event_handler
-	mov r2, #0
-	swi OS_Release
+    ; Disable vsync event
+
+    mov r0, #OSByte_EventDisable
+    mov r1, #Event_VSync
+    swi OS_Byte
+
+    ; Release our event handler
+    mov r0, #EventV
+    adr r1, event_handler
+    mov r2, #0
+    swi OS_Release
 
     ; Display whichever bank we've just written to
 
@@ -349,24 +382,65 @@ exit:
     ldr r1, scr_bank
     swi OS_Byte
 
+    ; Flush keyboard buffer (removes keypresses)
+
+    mov r0, #15
+    mov r1, #1
+    swi OS_Byte
+
     swi OS_Exit     ; return to RISCOS.
 
 ; R0=event number
 event_handler:
-	cmp r0, #Event_VSync
-	movnes pc, r14
+    cmp r0, #Event_VSync
+    bne keypress_handler
 
-    ; Must preserve all registers
+    str r0, [sp, #-4]!          ; Must preserve all registers
 
-    stmfd sp!, {r0-r1, lr}
+    ; Update the vsync counter
 
-	; Update the vsync counter
+    ldr r0, vsync
+    add r0, r0, #1
+    str r0, vsync
 
-	ldr r0, vsync
-	add r0, r0, #1
-	str r0, vsync
+    ldr r0, [sp], #4
+    mov pc, lr
 
-    ldmfd sp!, {r0-r1, pc}
+keypress_handler:
+    cmp r0, #Event_KeyPressed
+    movnes pc, lr
+
+    ; R1=0 key up or 1 key down
+    ; R2=internal key number (RMKey_*)
+
+    str r0, [sp, #-4]!          ; Must preserve all registers
+
+    ldr r0, keyboard_pressed_mask
+    cmp r1, #0
+    beq .1
+
+    ; Key down
+    cmp r2, #RMKey_Esc
+    orreq r0, r0, #1<<KeyBit_Escape
+    cmp r2, #RMKey_Z
+    orreq r0, r0, #1<<KeyBit_Z
+    cmp r2, #RMKey_X
+    orreq r0, r0, #1<<KeyBit_X
+    b .2
+
+.1:
+    ; Key up
+    cmp r2, #RMKey_Esc
+    orreq r0, r0, #1<<KeyBit_Escape
+    cmp r2, #RMKey_Z
+    biceq r0, r0, #1<<KeyBit_Z
+    cmp r2, #RMKey_X
+    biceq r0, r0, #1<<KeyBit_X
+
+.2:
+    str r0, keyboard_pressed_mask
+    ldr r0, [sp], #4
+    mov pc, lr
 
 ; ******************************************************************
 ; * Define some local variables.
@@ -386,6 +460,12 @@ angle:
 
 speed:
     .long 1<<16                 ; {s15.16}
+
+keyboard_pressed_mask:
+    .long 0
+
+keyboard_prev_mask:
+    .long 0
 
 stack_p:
     .long stack_base_no_adr
@@ -638,7 +718,7 @@ pal_gradient:
     .long 0x00FFFF00
 
 ; ******************************************************************
-; *	Space reserved for tables but not initialised with anything
+; * Space reserved for tables but not initialised with anything
 ; * Therefore these are not saved in the executable
 ; *
 ; * BSS segment (uninitialised data)
