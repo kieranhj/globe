@@ -280,12 +280,6 @@ plotdotloop:
     cmp r0, r1
     beq .1
 
-    .if debugrasters
-    mov r0, #24             ; border
-    mov r4, #0x00000000     ; black
-    bl pal_set_col
-    .endif
-
     ; Set next write buffer for screen.
 
     ldr r1, scr_bank
@@ -327,6 +321,12 @@ clsloop:
     .endr
     subs r10, r10, #1
     bne clsloop
+
+    .if debugrasters
+    mov r0, #24             ; border
+    mov r4, #0x00000000     ; black
+    bl pal_set_col
+    .endif
 
     ; Get mask of key bits that are both pressed and changed
 
