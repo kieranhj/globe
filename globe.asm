@@ -7,7 +7,7 @@
 ; *     Original 6502 by Rich Talbot-Watkins.
 ; *     Ported to Acorn Archimedes / ARM by kieran.
 ; *
-; *     TODO: Change the speed of rotation with Z and X keys
+; *     Change the speed of rotation with Z and X keys
 ; *     Press Esc to quit
 ; *
 ; *     Try assembling the code with debugrasters = 1 (line ~37)
@@ -27,14 +27,13 @@
 ; *     double buffered, it is quicker to clear the entire screen on
 ; *     Archimedes using a semi-unrolled loop of store multiple registers.
 ; *
-; *
 ; ******************************************************************
 
 ; Define globals
 
 .equ numdots,               2048        ; cf. 160 on 6502 @ 2MHz!
 .equ radius,                120
-.equ debugrasters,          1
+.equ debugrasters,          0
 .equ centrex,               160
 .equ centrey,               128
 .equ radsqr,                radius*radius
@@ -204,7 +203,7 @@ plotdotloop:
     ; Calculate its colour
 
     sub r4, r0, #64<<16         ; add quarter turn      {s15.16}
-    mov r4, r4, lsr #20         ; [0,255]               {s15.16}
+    mov r4, r4, lsr #20         ; [0,255]               {12.0}
     and r4, r4, #0xf            ;  -> [0,15]            {4.0}
 
     ; Calculate x position
