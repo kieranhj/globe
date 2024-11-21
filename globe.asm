@@ -59,40 +59,11 @@
 ; * The entry point of the demo
 ; ******************************************************************
 
-start:
-    adrl sp, stack_base
-    b main
-
-; In RISCOS it is standard to define your own application stack.
-
-.skip 1024
-stack_base:
-
-; Define some local variables.
-
-vsync:
-    .long 0
-
-scr_bank:
-    .long 0
-
-angle:
-    .long 0
-
-speed:
-    .long 1<<16
-
-sinus_table_p:
-    .long sinus_table_no_adr    ; address patched by the linker from bss segment
-
-dot_array_p:
-    .long dot_array_no_adr      ; address patched by the linker from bss segment
-
-; ******************************************************************
-; * Actual code start
-; ******************************************************************
-
 main:
+    ; In RISCOS it is standard to define your own application stack.
+
+    ldr sp, stack_p
+
     ; Make tables.
 
     bl MakeSinus
@@ -342,16 +313,47 @@ clsloop:
 
 exit:
     ; Display whichever bank we've just written to
+
     mov r0, #OSByte_WriteDisplayBank
     ldr r1, scr_bank
     swi OS_Byte
 
     ; And write to it
+
     mov r0, #OSByte_WriteVDUBank
     ldr r1, scr_bank
     swi OS_Byte
 
     swi OS_Exit     ; return to RISCOS.
+
+; ******************************************************************
+; * Define some local variables.
+; ******************************************************************
+
+vsync:
+    .long 0
+
+scr_bank:
+    .long 0                     ; Screen bank number being written so
+
+screen_addr:
+    .long 0                     ; Address of the current VIDC screen bank being written to
+
+angle:
+    .long 0                     ; {s15.16}
+
+speed:
+    .long 1<<16                 ; {s15.16}
+
+stack_p:
+    .long stack_base_no_adr
+
+sinus_table_p:
+    .long sinus_table_no_adr    ; address patched by the linker from bss segment
+
+dot_array_p:
+    .long dot_array_no_adr      ; address patched by the linker from bss segment
+
 
 ; ******************************************************************
 
@@ -363,9 +365,6 @@ get_screen_addr:
 
 screen_addr_input:
     .long VD_ScreenStart, -1
-
-screen_addr:
-    .long 0                    ; ptr to the current VIDC screen bank being written to.
 
 error_noscreenmem:
     .long 0
@@ -386,18 +385,18 @@ MakeDotArray:
 .1:
     ; Calculate doty
 
-    mov r0, r8, asl #16                     ; remove integer part
-    mov r0, r0, lsr #Sinus_TableShift       ; remove insignificant bits
-    ldr r0, [r9, r0, lsl #2]                ; R0=sin(x)     {s1.16}
+    mov r0, r8, asl #16                 ; remove integer part of x      {0.32}
+    mov r0, r0, lsr #Sinus_TableShift   ; remove insignificant bits     {14.0}
+    ldr r0, [r9, r0, lsl #2]            ; Look up sin(x)    {s1.16}
 
     mov r0, r0, asr #3      ; sin(x)*0.125                  {s1.16}
     sub r6, r8, r0          ; x-sinx(x)*0.125               {s1.16}
-    mov r0, #radius
+    mov r0, #radius         ;                               {s15.0}
     mul r6, r0, r6          ; doty=(x-sin(x)*1.25)*radius   {s15.16}
 
     ; Calulate dotr
 
-    mov r0, #radsqr<<16      ; radius*radius                 {16.16}
+    mov r0, #radsqr<<16     ; radius*radius                 {16.16}
     mov r4, r6, asr #8      ;                               {8.8}
     mov r3, r6, asr #8      ;                               {8.8}
     mul r4, r3, r4          ; y*y                           {16.16}
@@ -418,7 +417,7 @@ MakeDotArray:
 
     stmia r10!, {r5-r7}
 
-    add r8, r8, #2<<16/(numdots)
+    add r8, r8, #2<<16/(numdots) ;                          {s1.16}
     subs r11, r11, #1
     bne .1
     ldr pc, [sp], #4
@@ -623,5 +622,11 @@ sinus_table_no_adr:
 
 dot_array_no_adr:
     .skip numdots*4*3           ; {doyx, doty, dotr}
+
+; ******************************************************************
+
+stack_no_adr:
+    .skip 1024
+stack_base_no_adr:
 
 ; ******************************************************************
