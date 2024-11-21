@@ -19,9 +19,9 @@
 ; *     no need to 'chase the raster'.
 ; *
 ; *     The magenta part is a small loop where we wait for 'vsync'.
-; *     TODO: It's not actually vsync, but in fact a fixed time from actual
-; *     vsync (timed by timer 1) from which point we can start to erase
-; *     points from the top of the screen down.
+; *     Rather than use SWI OS_Byte 19 (*FX19) we check the vsync
+; *     counter which is updated in the VSync event handler. Events
+; *     are easier and more compatible than IRQs handlers under RISCOS.
 ; *
 ; *     The blue part is the time when we are erasing dots.  Because we're
 ; *     double buffered, it is quicker to clear the entire screen on
@@ -32,7 +32,7 @@
 
 ; Define globals
 
-.equ numdots,               2000        ; cf. 160 on 6502 @ 2MHz!
+.equ numdots,               2048        ; cf. 160 on 6502 @ 2MHz!
 .equ radius,                120
 .equ debugrasters,          1
 .equ centrex,               160
@@ -144,9 +144,19 @@ main:
     cmp r3, #16
     bne .2
 
-    ; First we wait for 'vsync' so we are synchronised
+	; Claim the Event vector
 
-    ; TODO: Demonstrate vsync Event.
+	mov r0, #EventV
+	adr r1, event_handler
+	mov r2, #0
+	swi OS_AddToVector
+
+	; Enable Vsync event
+	mov r0, #OSByte_EventEnable
+	mov r1, #Event_VSync
+	SWI OS_Byte
+
+    ; First we wait for 'vsync' so we are synchronised
 
     mov r0, #19
     swi OS_Byte
@@ -245,8 +255,11 @@ plotdotloop:
     bl pal_set_col
     .endif
 
-    mov r0, #19
-    swi OS_Byte
+    ldr r0, vsync
+.1:
+    ldr r1, vsync
+    cmp r0, r1
+    beq .1
 
     .if debugrasters
     mov r0, #24             ; border
@@ -312,6 +325,18 @@ clsloop:
     b mainloop
 
 exit:
+	; Disable vsync event
+
+	mov r0, #OSByte_EventDisable
+	mov r1, #Event_VSync
+	swi OS_Byte
+
+	; Release our event handler
+	mov r0, #EventV
+	adr r1, event_handler
+	mov r2, #0
+	swi OS_Release
+
     ; Display whichever bank we've just written to
 
     mov r0, #OSByte_WriteDisplayBank
@@ -325,6 +350,23 @@ exit:
     swi OS_Byte
 
     swi OS_Exit     ; return to RISCOS.
+
+; R0=event number
+event_handler:
+	cmp r0, #Event_VSync
+	movnes pc, r14
+
+    ; Must preserve all registers
+
+    stmfd sp!, {r0-r1, lr}
+
+	; Update the vsync counter
+
+	ldr r0, vsync
+	add r0, r0, #1
+	str r0, vsync
+
+    ldmfd sp!, {r0-r1, pc}
 
 ; ******************************************************************
 ; * Define some local variables.
