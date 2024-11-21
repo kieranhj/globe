@@ -1,23 +1,43 @@
 ; ******************************************************************
 ; *
-; *		BeebAsm demo
+; *     BeebAsm demo
 ; *
-; *		Spinning star globe
+; *     Spinning star globe
 ; *
 ; *     Original 6502 by Rich Talbot-Watkins.
-; *		Ported to Acorn Archimedes / ARM by kieran.
+; *     Ported to Acorn Archimedes / ARM by kieran.
 ; *
-; *     TODO: Description of the raster timings etc.
+; *     TODO: Change the speed of rotation with Z and X keys
+; *     Press Esc to quit
+; *
+; *     Try assembling the code with debugrasters = 1 (line ~37)
+; *     It shows how the frame is split up into various stages of
+; *     processing.
+; *
+; *     The red part is where we start to plot the dots - on Archimedes
+; *     we are using two screen buffers (double buffering) so there is
+; *     no need to 'chase the raster'.
+; *
+; *     The magenta part is a small loop where we wait for 'vsync'.
+; *     TODO: It's not actually vsync, but in fact a fixed time from actual
+; *     vsync (timed by timer 1) from which point we can start to erase
+; *     points from the top of the screen down.
+; *
+; *     The blue part is the time when we are erasing dots.  Because we're
+; *     double buffered, it is quicker to clear the entire screen on
+; *     Archimedes using a semi-unrolled loop of store multiple registers.
+; *
 ; *
 ; ******************************************************************
 
 ; Define globals
 
-.equ numdots,               2000
-.equ radius,                100
-.equ debugrasters, 	        1
+.equ numdots,               2000        ; cf. 160 on 6502 @ 2MHz!
+.equ radius,                120
+.equ debugrasters,          1
 .equ centrex,               160
 .equ centrey,               128
+.equ radsqr,                radius*radius
 
 .equ Screen_Banks,          2
 .equ Screen_Mode,           9
@@ -36,12 +56,12 @@
 .org 0x8000
 
 ; ******************************************************************
-; *	The entry point of the demo
+; * The entry point of the demo
 ; ******************************************************************
 
 start:
     adrl sp, stack_base
-	b main
+    b main
 
 ; In RISCOS it is standard to define your own application stack.
 
@@ -63,13 +83,13 @@ speed:
     .long 1<<16
 
 sinus_table_p:
-    .long sinus_table_no_adr
+    .long sinus_table_no_adr    ; address patched by the linker from bss segment
 
 dot_array_p:
-    .long dot_array_no_adr
+    .long dot_array_no_adr      ; address patched by the linker from bss segment
 
 ; ******************************************************************
-; *	Actual code start
+; * Actual code start
 ; ******************************************************************
 
 main:
@@ -80,61 +100,64 @@ main:
 
     ; Set MODE (VDU 22).
 
-	mov r0, #22
-	swi OS_WriteC
-	mov r0, #Screen_Mode
-	swi OS_WriteC
+    mov r0, #22
+    swi OS_WriteC
+    mov r0, #Screen_Mode
+    swi OS_WriteC
 
-	; Set screen size for number of buffers.
+    ; Set screen size for number of buffers.
 
-	mov r0, #DynArea_Screen
-	swi OS_ReadDynamicArea
-	mov r0, #DynArea_Screen
-	mov r2, #Screen_Bytes * Screen_Banks
-	subs r1, r2, r1
-	swi OS_ChangeDynamicArea
-	mov r0, #DynArea_Screen
-	swi OS_ReadDynamicArea
-	cmp r1, #Screen_Bytes * Screen_Banks
-	adrcc r0, error_noscreenmem ; failed to allocate screen memory.
-	swicc OS_GenerateError
+    mov r0, #DynArea_Screen
+    swi OS_ReadDynamicArea
+    mov r0, #DynArea_Screen
+    mov r2, #Screen_Bytes * Screen_Banks
+    subs r1, r2, r1
+    swi OS_ChangeDynamicArea
+    mov r0, #DynArea_Screen
+    swi OS_ReadDynamicArea
+    cmp r1, #Screen_Bytes * Screen_Banks
+    adrcc r0, error_noscreenmem ; failed to allocate screen memory.
+    swicc OS_GenerateError
 
     ; Disable cursor
 
-	mov r0, #23
-	swi OS_WriteC
-	mov r0, #1
-	swi OS_WriteC
-	mov r0, #0
-	swi OS_WriteC
-	swi OS_WriteC
-	swi OS_WriteC
-	swi OS_WriteC
-	swi OS_WriteC
-	swi OS_WriteC
-	swi OS_WriteC
-	swi OS_WriteC
+    mov r0, #23
+    swi OS_WriteC
+    mov r0, #1
+    swi OS_WriteC
+    mov r0, #0
+    swi OS_WriteC
+    swi OS_WriteC
+    swi OS_WriteC
+    swi OS_WriteC
+    swi OS_WriteC
+    swi OS_WriteC
+    swi OS_WriteC
+    swi OS_WriteC
 
-	; Clear all screen buffers
+    ; Display screen buffer 1.
 
-	mov r0, #OSByte_WriteDisplayBank
-	mov r1, #1
+    mov r1, #1
+    mov r0, #OSByte_WriteDisplayBank
     swi OS_Byte
+
+    ; Clear all screen buffers
+    mov r1, #1
 .1:
-	str r1, scr_bank
+    str r1, scr_bank
 
-	; CLS buffer N
-	mov r0, #OSByte_WriteVDUBank
-	swi OS_Byte
-	mov r0, #12
-	SWI OS_WriteC
+    ; CLS buffer N
+    mov r0, #OSByte_WriteVDUBank
+    swi OS_Byte
+    mov r0, #12
+    SWI OS_WriteC
 
-	ldr r1, scr_bank
-	add r1, r1, #1
-	cmp r1, #Screen_Banks
-	ble .1
+    ldr r1, scr_bank
+    add r1, r1, #1
+    cmp r1, #Screen_Banks
+    ble .1
 
-    ; Writing to buffer N
+    ; Get base address of screen buffer we're writing to
 
     bl get_screen_addr
 
@@ -150,7 +173,7 @@ main:
     cmp r3, #16
     bne .2
 
-	; First we wait for 'vsync' so we are synchronised
+    ; First we wait for 'vsync' so we are synchronised
 
     ; TODO: Demonstrate vsync Event.
 
@@ -159,10 +182,10 @@ main:
 
 mainloop:
 
-	; Plot every dot on the screen
+    ; Plot every dot on the screen
 
     .if debugrasters
-    mov r0, #24
+    mov r0, #24             ; border
     mov r4, #0x000000ff     ; red
     bl pal_set_col
     .endif
@@ -184,13 +207,13 @@ plotdotloop:
 
     ldmia r10!, {r5-r7}         ; read dotx, doty, dotr
 
-    add r0, r5, r8              ; x = dotx + angle
+    add r0, r5, r8              ; x = dotx + angle      {s15.16}
 
     ; Calculate colour.
 
-    sub r4, r0, #64<<16         ; add quarter turn
-    mov r4, r4, lsr #20         ; [0,255] {s15.16}
-    and r4, r4, #0xf            ;  -> [0,15] {4.0}
+    sub r4, r0, #64<<16         ; add quarter turn      {s15.16}
+    mov r4, r4, lsr #20         ; [0,255]               {s15.16}
+    and r4, r4, #0xf            ;  -> [0,15]            {4.0}
 
     ; R0=sin(x)
 
@@ -198,7 +221,7 @@ plotdotloop:
     mov r0, r0, lsr #Sinus_TableShift       ; remove insignificant bits
     ldr r0, [r9, r0, lsl #2]                ; lookup in sinus table
 
-	; Calculate sin(x) * radius
+    ; Calculate sin(x) * radius
     
     mov r0, r0, asr #8          ; sin(x)                {s7.8}
     mov r7, r7, asr #8          ; dotr                  {s7.8}
@@ -220,13 +243,13 @@ plotdotloop:
 
     ldrb r1, [r3]               ; load byte from screen
     tst r5, #1                  ; left or right pixel in byte?
-	andeq r1, r1, #0xF0		    ; mask out left hand pixel
-	orreq r1, r1, r4			; mask in colour as left hand pixel
-	andne r1, r1, #0x0F		    ; mask out right hand pixel
-	orrne r1, r1, r4, lsl #4	; mask in colour as right hand pixel
+    andeq r1, r1, #0xF0            ; mask out left hand pixel
+    orreq r1, r1, r4            ; mask in colour as left hand pixel
+    andne r1, r1, #0x0F            ; mask out right hand pixel
+    orrne r1, r1, r4, lsl #4    ; mask in colour as right hand pixel
     strb r1, [r3]               ; store byte to screen
 
-	; TODO: if the dot is in front, we double its size?
+    ; TODO: If the dot is in front, we double its size?
 
     subs r11, r11, #1
     bne plotdotloop
@@ -239,14 +262,14 @@ plotdotloop:
 
     ; Set next display buffer from vsync
 
-	ldr r1, scr_bank
-	mov r0, #OSByte_WriteDisplayBank
+    ldr r1, scr_bank
+    mov r0, #OSByte_WriteDisplayBank
     swi OS_Byte
 
     ; Wait for VSync here
 
     .if debugrasters
-    mov r0, #24
+    mov r0, #24             ; border
     mov r4, #0x00ff00ff     ; magenta
     bl pal_set_col
     .endif
@@ -255,7 +278,7 @@ plotdotloop:
     swi OS_Byte
 
     .if debugrasters
-    mov r0, #24
+    mov r0, #24             ; border
     mov r4, #0x00000000     ; black
     bl pal_set_col
     .endif
@@ -263,33 +286,34 @@ plotdotloop:
     ; Set next write buffer for screen.
 
     ldr r1, scr_bank
-	add r1, r1, #1
-	cmp r1, #Screen_Banks
-	movgt r1, #1
-	str r1, scr_bank
+    add r1, r1, #1
+    cmp r1, #Screen_Banks
+    movgt r1, #1
+    str r1, scr_bank
 
-	mov r0, #OSByte_WriteVDUBank
+    mov r0, #OSByte_WriteVDUBank
     swi OS_Byte
 
     bl get_screen_addr
 
-	; exit if Escape is pressed
-	mov r0, #OSByte_ReadKey
-	mov r1, #IKey_Escape
-	mov r2, #0xff
-	swi OS_Byte
-	
-	cmp r1, #0xff
-	cmpeq r2, #0xff
-	beq exit
-	
+    ; Exit if Escape is pressed
+
+    mov r0, #OSByte_ReadKey
+    mov r1, #IKey_Escape
+    mov r2, #0xff
+    swi OS_Byte
+    
+    cmp r1, #0xff
+    cmpeq r2, #0xff
+    beq exit
+    
     .if debugrasters
-    mov r0, #24
+    mov r0, #24             ; border
     mov r4, #0x00ff0000     ; blue
     bl pal_set_col
     .endif
 
-	; Now delete all the old dots (clear screen)
+    ; Now delete all the old dots (clear screen)
 
     ldr r12, screen_addr
 
@@ -313,49 +337,46 @@ clsloop:
     bne clsloop
 
     ; TODO: keypresses
-	b mainloop
+
+    b mainloop
 
 exit:
-	; Display whichever bank we've just written to
-	mov r0, #OSByte_WriteDisplayBank
-	ldr r1, scr_bank
-	swi OS_Byte
-	; and write to it
-	mov r0, #OSByte_WriteVDUBank
-	ldr r1, scr_bank
-	swi OS_Byte
+    ; Display whichever bank we've just written to
+    mov r0, #OSByte_WriteDisplayBank
+    ldr r1, scr_bank
+    swi OS_Byte
 
-	swi OS_Exit     ; return to RISCOS.
+    ; And write to it
+    mov r0, #OSByte_WriteVDUBank
+    ldr r1, scr_bank
+    swi OS_Byte
+
+    swi OS_Exit     ; return to RISCOS.
 
 ; ******************************************************************
 
 get_screen_addr:
-	str lr, [sp, #-4]!
-	adr r0, screen_addr_input
-	adr r1, screen_addr
-	swi OS_ReadVduVariables
-	ldr pc, [sp], #4
-	
+    adr r0, screen_addr_input
+    adr r1, screen_addr
+    swi OS_ReadVduVariables
+    mov pc, lr
+
 screen_addr_input:
-	.long VD_ScreenStart, -1
+    .long VD_ScreenStart, -1
 
 screen_addr:
-	.long 0					; ptr to the current VIDC screen bank being written to.
+    .long 0                    ; ptr to the current VIDC screen bank being written to.
 
 error_noscreenmem:
-	.long 0
-	.byte "Cannot allocate screen memory!"
-	.align 4
-	.long 0
-
-vdu_set_mode_disable_cursor:
-    .byte 22, Screen_Mode, 23,1,0,0,0,0,0,0,0,0,17,7
-.p2align 2
+    .long 0
+    .byte "Cannot allocate screen memory!"
+    .align 4
+    .long 0
 
 ; ******************************************************************
 
 MakeDotArray:
-	str lr, [sp, #-4]!
+    str lr, [sp, #-4]!
 
     mov r11, #numdots
     ldr r10, dot_array_p
@@ -376,7 +397,7 @@ MakeDotArray:
 
     ; Calulate dotr
 
-    mov r0, #10000<<16      ; radius*radius                 {16.16}
+    mov r0, #radsqr<<16      ; radius*radius                 {16.16}
     mov r4, r6, asr #8      ;                               {8.8}
     mov r3, r6, asr #8      ;                               {8.8}
     mul r4, r3, r4          ; y*y                           {16.16}
@@ -400,16 +421,18 @@ MakeDotArray:
     add r8, r8, #2<<16/(numdots)
     subs r11, r11, #1
     bne .1
-	ldr pc, [sp], #4
+    ldr pc, [sp], #4
 
-; Taken from https://github.com/chmike/fpsqrt/blob/master/fpsqrt.c
-; sqrt_i32_to_fx16_16 computes the square root of a 32bit integer and returns
-; a fixed point value with 16bit fractional part. It requires that v is positive.
-; The computation use only 32 bit registers and simple operations.
+; ******************************************************************
+; * Taken from https://github.com/chmike/fpsqrt/blob/master/fpsqrt.c
+; * sqrt_i32_to_fx16_16 computes the square root of a 32bit integer and returns
+; * a fixed point value with 16bit fractional part. It requires that v is positive.
+; * The computation use only 32 bit registers and simple operations.
+; ******************************************************************
 
 ; R0=int32_t v
 ; Return R3=fx16_16_t sqrt(v) [16.16]
-; Trashes: r1, r2, r4
+; Trashes: R1, R2, R4
 sqrt_i32_to_fx16_16:
 ;   uint32_t t, q, b, r;
     cmp r0, #0
@@ -510,11 +533,11 @@ rnd:
     ldr  r0, rnd_seed
     ldr  r3, rnd_bit
     ; R4=temp
-    TST  r3, r3, LSR #1                     ; top bit into Carry
-    MOVS r4, r4, RRX                        ; 33 bit rotate right
-    ADC  r3, r3, r3                         ; carry into lsb of spare bits
-    EOR  r4, r4, r0, LSL #12                ; (involved!)
-    EOR  r0, r4, r4, LSR #20                ; (similarly involved!)
+    tst  r3, r3, LSR #1                     ; top bit into Carry
+    movs r4, r4, RRX                        ; 33 bit rotate right
+    adc  r3, r3, r3                         ; carry into lsb of spare bits
+    eor  r4, r4, r0, LSL #12                ; (involved!)
+    eor  r0, r4, r4, LSR #20                ; (similarly involved!)
     str  r0, rnd_seed
     str  r3, rnd_bit
     mov  pc, lr
@@ -537,7 +560,7 @@ pal_set_col:
     strb r4, [r1, #4]       ; blue
 
     mov r0, #12
-    swi OS_Word
+    swi OS_Word             ; NB. this is super slow!
 
     mov pc,lr
 
@@ -550,27 +573,36 @@ pal_osword_block:
     ; blue
     ; (pad)
 
+; ******************************************************************
+; * DATA segment (initialised)
+; ******************************************************************
+
 pal_gradient:
-	.long 0x00000000
-	.long 0x00000099
-	.long 0x000000aa
-	.long 0x000000bb
-	.long 0x000000cc
-	.long 0x000000dd
-	.long 0x000000ee
-	.long 0x000000ff
-	.long 0x00888800
-	.long 0x00999900
-	.long 0x00AAAA00
-	.long 0x00BBBB00
-	.long 0x00CCCC00
-	.long 0x00DDDD00
-	.long 0x00EEEE00
-	.long 0x00FFFF00
+    ;     0x00BbGgRr
+    .long 0x00000000
+    .long 0x00000099
+    .long 0x000000aa
+    .long 0x000000bb
+    .long 0x000000cc
+    .long 0x000000dd
+    .long 0x000000ee
+    .long 0x000000ff
+    .long 0x00888800
+    .long 0x00999900
+    .long 0x00AAAA00
+    .long 0x00BBBB00
+    .long 0x00CCCC00
+    .long 0x00DDDD00
+    .long 0x00EEEE00
+    .long 0x00FFFF00
 
 ; ******************************************************************
+; *	Space reserved for tables but not initialised with anything
+; * Therefore these are not saved in the executable
+; *
 ; * BSS segment (uninitialised data)
-; * This is not stored in the executable.
+; * Note that labels cannot be referenced across segments using the ADR directive
+; * Hence my arbitrary convention of suffixing such labels with _no_adr as a reminder!
 ; ******************************************************************
 
 .bss
@@ -583,8 +615,8 @@ sinus_table_no_adr:
     .skip Sinus_TableSize*4
 
 ; ******************************************************************
-; * Dot array.
-; * Stored interleaved so these can be read in one instruction on ARM.
+; * Dot array
+; * Stored interleaved so these can be read in one instruction on ARM
 ; * contains the phase of this dot in brads [0,256) {8.16}
 ; * contains the y position of the dot {s15.16}
 ; * contains the radius of the ball at this y position (s15.16)
