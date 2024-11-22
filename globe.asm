@@ -33,7 +33,7 @@
 
 .equ numdots,               2048        ; cf. 160 on 6502 @ 2MHz!
 .equ radius,                120
-.equ debugrasters,          0
+.equ debugrasters,          1
 .equ centrex,               160
 .equ centrey,               128
 .equ radsqr,                radius*radius
@@ -74,10 +74,8 @@ main:
 
     ; Set MODE (VDU 22).
 
-    mov r0, #22
-    swi OS_WriteC
-    mov r0, #Screen_Mode
-    swi OS_WriteC
+    swi OS_WriteI + 22
+    swi OS_WriteI + Screen_Mode
 
     ; Set screen size for number of buffers.
 
@@ -95,19 +93,7 @@ main:
 
     ; Disable cursor
 
-    mov r0, #23
-    swi OS_WriteC
-    mov r0, #1
-    swi OS_WriteC
-    mov r0, #0
-    swi OS_WriteC
-    swi OS_WriteC
-    swi OS_WriteC
-    swi OS_WriteC
-    swi OS_WriteC
-    swi OS_WriteC
-    swi OS_WriteC
-    swi OS_WriteC
+    swi OS_RemoveCursors
 
     ; Display screen buffer 1.
 
@@ -165,11 +151,6 @@ main:
     mov r0, #OSByte_EventEnable
     mov r1, #Event_KeyPressed
     SWI OS_Byte
-
-    ; First we wait for 'vsync' so we are synchronised
-
-    mov r0, #19
-    swi OS_Byte
 
 mainloop:
 

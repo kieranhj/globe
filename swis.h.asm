@@ -27,6 +27,7 @@
 .equ XOS_ServiceCall, OS_ServiceCall | XOS_Flag
 .equ OS_ReadVduVariables, 0x31
 .equ XOS_ReadVduVariables, OS_ReadVduVariables | XOS_Flag
+.equ OS_RemoveCursors, 0x36
 .equ OS_ReadMonotonicTime, 0x42
 .equ OS_Plot, 0x45
 .equ OS_ClaimDeviceVector, 0x4b
