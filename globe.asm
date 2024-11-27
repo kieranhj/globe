@@ -32,9 +32,11 @@
 ; Define globals
 
 .equ _MoarPrecalc,          1
+.equ _EvenYDistribution,    1
+.equ _Mode12,               1
 
 .if _MoarPrecalc
-.equ numdots,               2300
+.equ numdots,               2200
 .else
 .equ numdots,               2048        ; cf. 160 on 6502 @ 2MHz!
 .endif
@@ -45,8 +47,13 @@
 .equ radsqr,                radius*radius
 
 .equ Screen_Banks,          2
+.if _Mode12
+.equ Screen_Mode,           12
+.equ Screen_Width,          640
+.else
 .equ Screen_Mode,           9
-.equ Screen_Width,          320 
+.equ Screen_Width,          320
+.endif
 .equ Screen_Height,         256
 .equ Screen_PixelsPerByte,  2
 .equ Screen_Stride,         Screen_Width/Screen_PixelsPerByte
@@ -194,11 +201,32 @@ plotdotloop:
 
     add r0, r5, r8              ; x = dotx + angle      {s15.16}
 
+    ; Unroll notes:
+    ;  dotx doesn't change for a dot so can be made immediate.
+    ;  instead of adding angle, shift the base of the table being looked up.
+    ;  doty doesn't change, so we already know the scanline offset.
+    ;  don't need to calculate this, can prebake it.
+
+    ; Remove all the fixed point nonsense.
+    ; What's the simplest possible set of instructions to plot?
+    ; Something like...
+
+    ; mov r6, #doty
+    ; add r1, r9, #doty * 2048  ; sin_table_for_y + angle (2*256 entries)
+    ; ldr r5, [r9, #dotx * 4]   ; xpos=sin[x] <= could probably embed colour here?
+    ; ldrb r4, [r8, #dotx]      ; col=col_table_plus_angle[x] (2*256 entries)
+    ; add r3, r12, r6, lsl #7     ; scr_ptr = scr_base + y * 128
+    ; add r3, r3, r6, lsl #5      ;                    + y * 32
+    ; add r3, r3, r5, lsr #1      ;                    + x / 2
+
     ; Calculate its colour
 
     sub r4, r0, #64<<16         ; add quarter turn      {s15.16}
     mov r4, r4, lsr #20         ; [0,255]               {12.0}
     and r4, r4, #0xf            ;  -> [0,15]            {4.0}
+    .if _Mode12
+    orr r4, r4, r4, lsl #4
+    .endif
 
     ; Calculate x position
 
@@ -206,8 +234,9 @@ plotdotloop:
 
     .if _MoarPrecalc
     movs r3, r6, asr #16        ; INT(doty)
-    addle r3, r3, #radius+1     ; table_no=radius+INT(doty)
-    rsbgtg r3, r3, #radius       ; table_no=radius-INT(doty)
+    addle r3, r3, #radius       ; table_no=radius+INT(doty)
+    rsbgt r3, r3, #radius       ; table_no=radius-INT(doty)
+
     add r3, r9, r3, lsl #10     ; table_base=moar+table_no*256*4
     mov r0, r0, asl #8          ; clamp brads [0,255]
     mov r0, r0, asr #24
@@ -234,6 +263,11 @@ plotdotloop:
 
     ; Calculate ptr to screen byte
 
+    .if _Mode12
+    add r3, r12, r6, lsl #8     ; scr_ptr = scr_base + y * 256
+    add r3, r3, r6, lsl #6      ;                    + y * 64
+    strb r4, [r3, r5]
+    .else
     add r3, r12, r6, lsl #7     ; scr_ptr = scr_base + y * 128
     add r3, r3, r6, lsl #5      ;                    + y * 32
     add r3, r3, r5, lsr #1      ;                    + x / 2
@@ -241,17 +275,19 @@ plotdotloop:
     ; Plot a pixel in MODE 9
 
     ; Interesting performance note!
+
+    tst r5, #1                  ; left or right pixel in byte?
+
     ; This load instruction is faster if aligned PC & 0xc == 4...
 
     ldrb r1, [r3]               ; load byte from screen
-
-    tst r5, #1                  ; left or right pixel in byte?
 
     andeq r1, r1, #0xF0         ; mask out left hand pixel
     orreq r1, r1, r4            ; mask in colour as left hand pixel
     andne r1, r1, #0x0F         ; mask out right hand pixel
     orrne r1, r1, r4, lsl #4    ; mask in colour as right hand pixel
     strb r1, [r3]               ; store byte to screen
+    .endif
 
     ; TODO: If the dot is in front, we double its size?
 
@@ -511,19 +547,26 @@ MakeDotArray:
     ldr r10, dot_array_p
     ldr r9, sinus_table_p
 
-    mov r8, #-1<<16         ; iterate x over [-1,1]         {s1.16}
-    add r8, r8, #1<<16/numdots   ;                          {s1.16}
+    mov r8, #-1<<24         ; iterate x over [-1,1]         {s1.24}
+    add r8, r8, #1<<24/numdots   ;                          {s1.16}
 .1:
     ; Calculate doty
 
-    mov r0, r8, asl #16                 ; remove integer part of x      {0.32}
+.if _EvenYDistribution
+    mov r0, #radius         ;                               {8.0}
+    mul r6, r0, r8          ; doty=x*radius                 {s1.24}
+    mov r6, r6, asr #8
+.else
+    mov r0, r8, asl #8                  ; remove integer part of x      {0.32}
     mov r0, r0, lsr #Sinus_TableShift   ; remove insignificant bits     {14.0}
     ldr r0, [r9, r0, lsl #2]            ; Look up sin(x)    {s1.16}
 
-    mov r0, r0, asr #3      ; sin(x)*0.125                  {s1.16}
-    sub r6, r8, r0          ; x-sinx(x)*0.125               {s1.16}
+    mov r0, r0, asl #5      ; sin(x)*0.125                  {s1.24}
+    sub r6, r8, r0          ; x-sinx(x)*0.125               {s1.24}
+    mov r6, r6, asr #8      ;                               {s1.16}
     mov r0, #radius         ;                               {s15.0}
     mul r6, r0, r6          ; doty=(x-sin(x)*1.25)*radius   {s15.16}
+.endif
 
     ; Calulate dotr
 
@@ -548,7 +591,7 @@ MakeDotArray:
 
     stmia r10!, {r5-r7}
 
-    add r8, r8, #2<<16/(numdots) ;                          {s1.16}
+    add r8, r8, #2<<24/(numdots) ;                          {s1.16}
     subs r11, r11, #1
     bne .1
     ldr pc, [sp], #4
