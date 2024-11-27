@@ -31,7 +31,13 @@
 
 ; Define globals
 
+.equ _MoarPrecalc,          1
+
+.if _MoarPrecalc
+.equ numdots,               2300
+.else
 .equ numdots,               2048        ; cf. 160 on 6502 @ 2MHz!
+.endif
 .equ radius,                120
 .equ debugrasters,          1
 .equ centrex,               160
@@ -71,6 +77,9 @@ main:
 
     bl MakeSinus
     bl MakeDotArray
+    .if _MoarPrecalc
+    bl MakeMoarPrecalc
+    .endif
 
     ; Set MODE (VDU 22).
 
@@ -170,7 +179,11 @@ mainloop:
 
     mov r11, #numdots
     ldr r10, dot_array_p
+    .if _MoarPrecalc
+    ldr r9, moar_array_p
+    .else
     ldr r9, sinus_table_p
+    .endif
     ldr r8, angle
 
 plotdotloop:
@@ -191,6 +204,15 @@ plotdotloop:
 
     ; R0=sin(x)
 
+    .if _MoarPrecalc
+    movs r3, r6, asr #16        ; INT(doty)
+    addle r3, r3, #radius+1     ; table_no=radius+INT(doty)
+    rsbgtg r3, r3, #radius       ; table_no=radius-INT(doty)
+    add r3, r9, r3, lsl #10     ; table_base=moar+table_no*256*4
+    mov r0, r0, asl #8          ; clamp brads [0,255]
+    mov r0, r0, asr #24
+    ldr r0, [r3, r0, lsl #2]    ; look up premultiplied
+    .else
     mov r0, r0, asl #8                      ; clamp brads [0,255]
     mov r0, r0, lsr #Sinus_TableShift       ; remove insignificant bits
     ldr r0, [r9, r0, lsl #2]                ; lookup in sinus table
@@ -200,6 +222,7 @@ plotdotloop:
     mov r0, r0, asr #8          ; sin(x)                {s7.8}
     mov r7, r7, asr #8          ; dotr                  {s7.8}
     mul r0, r7, r0              ; r0 = sin(x) * dotr    {s15.16}
+    .endif
 
     ; Convert into screen coordinates
 
@@ -217,12 +240,13 @@ plotdotloop:
 
     ; Plot a pixel in MODE 9
 
-    tst r5, #1                  ; left or right pixel in byte?
-
     ; Interesting performance note!
     ; This load instruction is faster if aligned PC & 0xc == 4...
 
     ldrb r1, [r3]               ; load byte from screen
+
+    tst r5, #1                  ; left or right pixel in byte?
+
     andeq r1, r1, #0xF0         ; mask out left hand pixel
     orreq r1, r1, r4            ; mask in colour as left hand pixel
     andne r1, r1, #0x0F         ; mask out right hand pixel
@@ -456,6 +480,10 @@ sinus_table_p:
 dot_array_p:
     .long dot_array_no_adr      ; address patched by the linker from bss segment
 
+.if _MoarPrecalc
+moar_array_p:
+    .long yet_moar_precalc_no_adr
+.endif
 
 ; ******************************************************************
 
@@ -484,6 +512,7 @@ MakeDotArray:
     ldr r9, sinus_table_p
 
     mov r8, #-1<<16         ; iterate x over [-1,1]         {s1.16}
+    add r8, r8, #1<<16/numdots   ;                          {s1.16}
 .1:
     ; Calculate doty
 
@@ -698,6 +727,52 @@ pal_gradient:
     .long 0x00FFFF00
 
 ; ******************************************************************
+; * Moar precalc
+; ******************************************************************
+
+.if _MoarPrecalc
+MakeMoarPrecalc:
+    str lr, [sp, #-4]!
+
+    ldr r9, sinus_table_p
+    ldr r8, moar_array_p
+
+    ; Loop per Y
+    mov r6, #radius<<16
+.1:
+    mov r0, #radsqr<<16     ; radius*radius                 {16.16}
+    mov r4, r6, asr #8      ;                               {8.8}
+    mov r3, r6, asr #8      ;                               {8.8}
+    mul r4, r3, r4          ; y*y                           {16.16}
+    sub r0, r0, r4          ; radius*radius-y*y             {16.16}
+
+    mov r0, r0, asr #16     ;                               {16.0}
+    bl sqrt_i32_to_fx16_16  ; returns SQRT(R0) in R3        {16.16}
+    ; Trashes R1, R2, R4
+
+    mov r3, r3, asr #8      ; radius                        {8.8}
+
+    ; Copy a sine table.
+    mov r10, #0                     ; x=0
+.2:
+    ldr r0, [r9, r10, lsl #2]       ; sin(x)                {s1.16}
+
+    mov r0, r0, asr #8              ;                       {s1.8}
+    mul r0, r3, r0                  ; radius*sin(x)         {s8.16}
+
+    str r0, [r8], #4
+
+    add r10, r10, #1<<6             ; x+=1
+    cmp r10, #256<<6
+    blt .2
+
+    subs r6, r6, #1<<16
+    bpl .1
+
+    ldr pc, [sp], #4
+.endif
+
+; ******************************************************************
 ; * Space reserved for tables but not initialised with anything
 ; * Therefore these are not saved in the executable
 ; *
@@ -731,4 +806,11 @@ stack_no_adr:
     .skip 1024
 stack_base_no_adr:
 
+.if _MoarPrecalc
 ; ******************************************************************
+; * Gigabates Amiga cheat.
+; * Precalc 128 sine tables with 256 entries each, all premultiplied by the radius
+yet_moar_precalc_no_adr:
+    .skip 256*4*(radius+1)
+; ******************************************************************
+.endif
