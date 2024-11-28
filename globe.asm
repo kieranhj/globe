@@ -31,7 +31,7 @@
 
 ; Define globals
 
-.equ _UnrollPlotCode,       0
+.equ _UnrollPlotCode,       1
 .equ _EvenYDistribution,    1
 .equ _Mode12,               1
 
@@ -187,8 +187,8 @@ mainloop:
 
 .if _UnrollPlotCode
     ldr r8, angle
-    mov r8, r8, asl #8
-    mov r8, r8, asr #24         ; INT(a)
+    mov r8, r8, asl #7          ; double precision
+    mov r8, r8, asr #23         ; INT(a)
     ldr r9, premult_sines_p
     add r9, r9, r8, lsl #2      ; shift base of tables
     adr lr, unrolled_code_return
@@ -786,16 +786,23 @@ MakeUnrolled:
     bl sqrt_i32_to_fx16_16  ; returns SQRT(R0) in R3        {16.16}
     ; Trashes R1, R2, R4
 
-    mov r3, r3, asr #8      ; radius                        {8.8}
+    mov r5, r3, asr #8      ; radius                        {8.8}
 
     ; Copy a sine table and multiply it for this Y.
     mov r10, #0                     ; x=0
 .2:
-    and r2, r10, #0x3fc0            ; wrap after 256 - could use shift
+    mov r2, r10, lsl #18
+    mov r2, r2, lsr #18             ; MOD 256
     ldr r0, [r9, r2, lsl #2]        ; sin(x)                {s1.16}
 
     mov r0, r0, asr #8              ;                       {s1.8}
-    mul r0, r3, r0                  ; radius*sin(x)         {s8.16}
+    mul r1, r5, r0                  ; radius*sin(x)         {s8.16}
+
+    ; Add a few bits of randomness to reduce aliasing.
+
+    bl rnd                          ; R0=rand(MAX_UINT)     {32.0}
+    ; Trashes R3, R4
+    add r0, r1, r0, asr #24         ; add 8 bits of rnd
 
     mov r0, r0, asr #16             ; {s8.0}
     add r0, r0, #centrex            ; {9.0}
@@ -810,7 +817,7 @@ MakeUnrolled:
 
     str r0, [r8], #4
 
-    add r10, r10, #1<<6             ; x+=1
+    add r10, r10, #1<<5             ; x+=0.5 <= double precision
     cmp r10, #512<<6
     blt .2
 
@@ -859,12 +866,13 @@ MakeUnrolled:
 
     mov r7, r3              ; SQRT(radius*radius-y*y)       {16.16}
 
-    ; Calculate dotx
+    ; Calculate dota
 
     bl rnd                  ; R0=rand(MAX_UINT)             {32.0}
-    mov r5, r0, lsr #8      ; shift down to brad [0,256)    {8.16}
+    ; Trashes R3, R4
+    mov r5, r0, lsr #7      ; shift down to brad [0,256)    {8.16}
 
-    ; Store {dotx, doty, dotr}
+    ; No need to store {dota, doty, dotr}
 
     mov r5, r5, asr #16         ; INT(dota)         {s8.0}
     movs r6, r6, asr #16        ; INT(doty)         {s8.0}
@@ -876,6 +884,8 @@ MakeUnrolled:
 
     adr r0, unrolled_snippet
     ldmia r0, {r0-r4}           ; read 5 words
+
+    mov r7, r7, lsl #1          ; double precision
 
     ; add r1, r9, #N * 2048
     tst r7, #1
@@ -911,7 +921,7 @@ MakeUnrolled:
     ldr pc, [sp], #4
 
 unrolled_snippet:
-    add r1, r9, #2 * 2048   ; sin_table_for_y + angle (2*256 entries)
+    add r1, r9, #2 * 4096   ; sin_table_for_y + angle (2*512 entries)
     ldr r5, [r1, #0]        ; xpos<<16 | colour
     add r3, r12, #255 * 256
     add r3, r3, #255 * 64
@@ -957,7 +967,7 @@ stack_base_no_adr:
 .if _UnrollPlotCode
 ; ******************************************************************
 premult_sine_tables_no_adr:
-    .skip 256*2*4*(radius+1)
+    .skip 512*2*4*(radius+1)    ; double precision
 
 unrolled_code_no_adr:
 
