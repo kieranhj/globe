@@ -40,7 +40,7 @@
 .if _CopyAndFlip
 .equ numdots,               7000
 .else
-.equ numdots,               8192
+.equ numdots,               11264
 .endif
 .else
 .equ numdots,               2048        ; cf. 160 on 6502 @ 2MHz!
@@ -50,6 +50,7 @@
 .equ centrex,               160
 .equ centrey,               128
 .equ radsqr,                radius*radius
+.equ topy,                  centrey-radius-1
 
 .equ Screen_Banks,          2
 .if _Mode12
@@ -871,10 +872,12 @@ MakeUnrolled:
 
     ldr r12, unrolled_code_p
     mov r11, #numdots
-
     mov r10, #-1
-
     ldr r9, sinus_table_p
+
+    adr r0, unrolled_snippet
+    ldr r0, [r0, #5*4]      ; set r3
+    str r0, [r12], #4
 
     mov r8, #-1<<24         ; iterate x over [-1,1]         {s1.24}
 .3:
@@ -927,38 +930,31 @@ MakeUnrolled:
     add r6, r6, #centrey        ; doty+=centrey
 
     adr r0, unrolled_snippet
-    ldmia r0, {r0-r4}           ; read 5 words
+    ldmia r0, {r0-r3}           ; read 4 words
 
     cmp r7, r10
     beq .4
     mov r10, r7
 
     ; add r1, r9, #N * 2048
-    .if 1
     tst r7, #1
     moveq r7, r7, lsr #1        ; even N>>1
     movne r7, r7, lsl #1        ; odd N<<1
     orrne r0, r0, #0x100        ; Odd numbers 0x1b N<<1
-    .endif
     bic r0, r0, #0xff           ; Even numbers 0x1a N>>1
     orr r0, r0, r7
 
     str r0, [r12], #4
-.4:
 
+    ; add r3, r3, #Screen_Stride  ; step one line.
+    str r1, [r12], #4           ; increment line ptr.
+
+.4:
     ; ldr r5, [r1, #dota * 4]
     mov r5, r5, lsl #2          ; dota * 4
-    orr r1, r1, r5
+    orr r2, r2, r5
 
-    ; add r3, r12, #doty * 256
-    bic r2, r2, #0xff
-    orr r2, r2, r6              ; doty * 256
-
-    ; add r3, r3, #doty * 64
-    bic r3, r3, #0xff
-    orr r3, r3, r6              ; doty * 64
-
-    stmia r12!, {r1-r4}          ; write 5 words
+    stmia r12!, {r2-r3}          ; write 5 words
 
 .if _CopyAndFlip
     add r8, r8, #1<<24/(numdots) ;                          {s1.16}
@@ -970,19 +966,18 @@ MakeUnrolled:
 
     ; Copy mov pc, lr
     adr r0, unrolled_snippet
-    ldr r0, [r0, #5*4]
+    ldr r0, [r0, #4*4]
     str r0, [r12], #4
 
     ldr pc, [sp], #4
 
 unrolled_snippet:
     add r1, r9, #2 * 2048       ; sin_table_for_y + angle (2*512 entries)
+    add r3, r3, #Screen_Stride  ; step one line.
     ldr r5, [r1, #0]            ; xpos<<16 | colour
-    ; Doh! TODO: Step R13 (line ptr) optionally as sorted top to bottom.
-    add r3, r12, #255 * 256     ; * 320 can be a single instruction provided 
-    add r3, r3, #255 * 64       ;   y not more than 6 bits apart.
     strb r5, [r3, r5, lsr #16]
-    mov pc, lr
+    mov pc, lr                              ; end
+    add r3, r12, #topy*Screen_Stride        ; start
 .endif
 
 
