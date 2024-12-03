@@ -69,6 +69,8 @@
 .equ KeyBit_Escape,         0
 .equ KeyBit_Z,              1
 .equ KeyBit_X,              2
+.equ KeyBit_Space,          3
+.equ KeyBit_S,              4
 
 ; Define swis and other values used by RISCOS.
 
@@ -199,8 +201,8 @@ mainloop:
 
 .if _UnrollPlotCode
     ldr r8, angle
-    mov r8, r8, asl #8
-    mov r8, r8, asr #24         ; INT(a)
+    mov r8, r8, asl #6
+    mov r8, r8, asr #22         ; INT(a)
     ldr r9, premult_sines_p
     add r9, r9, r8, lsl #2      ; shift base of tables
     adr lr, unrolled_code_return
@@ -287,11 +289,24 @@ plotdotloop:
     bne plotdotloop
 .endif
 
+    ; TICK
+
     ; Add to rotation
 
+    ldr r1, play_step
+    cmp r1, #0
+    bne do_tick
+
+    ldr r0, play_pause
+    cmp r0, #0
+    beq skip_tick
+
+do_tick:
     ldr r7, speed
     add r8, r8, r7
     str r8, angle
+
+skip_tick:
 
 .if _CopyAndFlip
     .if debugrasters
@@ -407,6 +422,18 @@ clsloop:
     addne r0, r0, #1<<14
     str r0, speed
 
+    tst r4, #1<<KeyBit_Space
+    beq .1
+    ldr r0, play_pause
+    eor r0, r0, #1
+    str r0, play_pause
+
+.1:
+    mov r0, #0
+    tst r4, #1<<KeyBit_S
+    movne r0, #1
+    str r0, play_step
+
     ; Exit if Escape is pressed
 
     tst r4, #1<<KeyBit_Escape
@@ -487,6 +514,10 @@ keypress_handler:
     orreq r0, r0, #1<<KeyBit_Z
     cmp r2, #RMKey_X
     orreq r0, r0, #1<<KeyBit_X
+    cmp r2, #RMKey_Space
+    orreq r0, r0, #1<<KeyBit_Space
+    cmp r2, #RMKey_S
+    orreq r0, r0, #1<<KeyBit_S
     b .2
 
 .1:
@@ -497,6 +528,10 @@ keypress_handler:
     biceq r0, r0, #1<<KeyBit_Z
     cmp r2, #RMKey_X
     biceq r0, r0, #1<<KeyBit_X
+    cmp r2, #RMKey_Space
+    biceq r0, r0, #1<<KeyBit_Space
+    cmp r2, #RMKey_S
+    biceq r0, r0, #1<<KeyBit_S
 
 .2:
     str r0, keyboard_pressed_mask
@@ -526,6 +561,12 @@ angle:
 
 speed:
     .long 1<<16                 ; {s15.16}
+
+play_pause:
+    .long 1
+
+play_step:
+    .long 0
 
 keyboard_pressed_mask:
     .long 0
@@ -865,7 +906,7 @@ MakeUnrolled:
 
     str r0, [r8], #4
 
-    add r10, r10, #1<<6             ; x+=1.0
+    add r10, r10, #1<<4             ; x+=0.25
     cmp r10, #512<<6
     blt .2
 
@@ -921,7 +962,7 @@ MakeUnrolled:
 
     bl rnd                  ; R0=rand(MAX_UINT)             {32.0}
     ; Trashes R3, R4
-    mov r5, r0, lsr #8      ; shift down to brad [0,256)    {8.16}
+    mov r5, r0, lsr #6      ; shift down to brad [0,256)    {8.16}
 
     ; No need to store {dota, doty, dotr}
 
@@ -943,8 +984,9 @@ MakeUnrolled:
     ; add r1, r9, #N * 2048
     tst r7, #1
     moveq r7, r7, lsr #1        ; even N>>1
+    eoreq r0, r0, #0x300
     movne r7, r7, lsl #1        ; odd N<<1
-    orrne r0, r0, #0x100        ; Odd numbers 0x1b N<<1
+;   orrne r0, r0, #0x100        ; Odd numbers 0x1b N<<1
     bic r0, r0, #0xff           ; Even numbers 0x1a N>>1
     orr r0, r0, r7
 
@@ -976,7 +1018,7 @@ MakeUnrolled:
     ldr pc, [sp], #4
 
 unrolled_snippet:
-    add r1, r9, #2 * 2048       ; sin_table_for_y + angle (2*512 entries)
+    add r1, r9, #1 * 2048 * 4       ; sin_table_for_y + angle (2*512 entries)
     add r3, r3, #Screen_Stride  ; step one line.
     ldr r5, [r1, #0]            ; xpos<<16 | colour
     strb r5, [r3, r5, lsr #16]
@@ -1024,7 +1066,7 @@ stack_base_no_adr:
 .if _UnrollPlotCode
 ; ******************************************************************
 premult_sine_tables_no_adr:
-    .skip 256*2*4*(radius+1)
+    .skip 256*4*2*4*(radius+1)
 
 unrolled_code_no_adr:
 
