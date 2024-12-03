@@ -36,7 +36,7 @@
 .equ _Mode12,               1
 
 .if _UnrollPlotCode
-.equ numdots,               7800
+.equ numdots,               8192
 .else
 .equ numdots,               2048        ; cf. 160 on 6502 @ 2MHz!
 .endif
@@ -187,8 +187,8 @@ mainloop:
 
 .if _UnrollPlotCode
     ldr r8, angle
-    mov r8, r8, asl #7          ; double precision
-    mov r8, r8, asr #23         ; INT(a)
+    mov r8, r8, asl #8
+    mov r8, r8, asr #24         ; INT(a)
     ldr r9, premult_sines_p
     add r9, r9, r8, lsl #2      ; shift base of tables
     adr lr, unrolled_code_return
@@ -494,15 +494,15 @@ stack_p:
 sinus_table_p:
     .long sinus_table_no_adr    ; address patched by the linker from bss segment
 
-dot_array_p:
-    .long dot_array_no_adr      ; address patched by the linker from bss segment
-
 .if _UnrollPlotCode
 premult_sines_p:
     .long premult_sine_tables_no_adr
 
 unrolled_code_p:
     .long unrolled_code_no_adr
+.else
+dot_array_p:
+    .long dot_array_no_adr      ; address patched by the linker from bss segment
 .endif
 
 ; ******************************************************************
@@ -682,7 +682,7 @@ MakeSinus:
 ; ******************************************************************
 
 rnd_seed:
-    .long 0x87654321
+    .long 0x12345678
 
 rnd_bit:
     .long 0x11111111
@@ -802,7 +802,7 @@ MakeUnrolled:
 
     bl rnd                          ; R0=rand(MAX_UINT)     {32.0}
     ; Trashes R3, R4
-    add r0, r1, r0, asr #24         ; add 8 bits of rnd
+    add r0, r1, r0, asr #16         ; add 16 bits of rnd [+-1.0]
 
     mov r0, r0, asr #16             ; {s8.0}
     add r0, r0, #centrex            ; {9.0}
@@ -817,7 +817,7 @@ MakeUnrolled:
 
     str r0, [r8], #4
 
-    add r10, r10, #1<<5             ; x+=0.5 <= double precision
+    add r10, r10, #1<<6             ; x+=1.0
     cmp r10, #512<<6
     blt .2
 
@@ -828,7 +828,9 @@ MakeUnrolled:
 
     ldr r12, unrolled_code_p
     mov r11, #numdots
-    ldr r10, dot_array_p
+
+    mov r10, #-1
+
     ldr r9, sinus_table_p
 
     mov r8, #-1<<24         ; iterate x over [-1,1]         {s1.24}
@@ -870,7 +872,7 @@ MakeUnrolled:
 
     bl rnd                  ; R0=rand(MAX_UINT)             {32.0}
     ; Trashes R3, R4
-    mov r5, r0, lsr #7      ; shift down to brad [0,256)    {8.16}
+    mov r5, r0, lsr #8      ; shift down to brad [0,256)    {8.16}
 
     ; No need to store {dota, doty, dotr}
 
@@ -885,15 +887,22 @@ MakeUnrolled:
     adr r0, unrolled_snippet
     ldmia r0, {r0-r4}           ; read 5 words
 
-    mov r7, r7, lsl #1          ; double precision
+    cmp r7, r10
+    beq .4
+    mov r10, r7
 
     ; add r1, r9, #N * 2048
+    .if 1
     tst r7, #1
     moveq r7, r7, lsr #1        ; even N>>1
     movne r7, r7, lsl #1        ; odd N<<1
     orrne r0, r0, #0x100        ; Odd numbers 0x1b N<<1
+    .endif
     bic r0, r0, #0xff           ; Even numbers 0x1a N>>1
     orr r0, r0, r7
+
+    str r0, [r12], #4
+.4:
 
     ; ldr r5, [r1, #dota * 4]
     mov r5, r5, lsl #2          ; dota * 4
@@ -907,7 +916,7 @@ MakeUnrolled:
     bic r3, r3, #0xff
     orr r3, r3, r6              ; doty * 64
 
-    stmia r12!, {r0-r4}          ; write 5 words
+    stmia r12!, {r1-r4}          ; write 5 words
 
     add r8, r8, #2<<24/(numdots) ;                          {s1.16}
     subs r11, r11, #1
@@ -921,8 +930,8 @@ MakeUnrolled:
     ldr pc, [sp], #4
 
 unrolled_snippet:
-    add r1, r9, #2 * 4096   ; sin_table_for_y + angle (2*512 entries)
-    ldr r5, [r1, #0]        ; xpos<<16 | colour
+    add r1, r9, #2 * 2048     ; sin_table_for_y + angle (2*512 entries)
+    ldr r5, [r1, #0]            ; xpos<<16 | colour
     add r3, r12, #255 * 256
     add r3, r3, #255 * 64
     strb r5, [r3, r5, lsr #16]
@@ -955,8 +964,10 @@ sinus_table_no_adr:
 ; * contains the y position of the dot {s15.16}
 ; * contains the radius of the ball at this y position (s15.16)
 
+.if !_UnrollPlotCode
 dot_array_no_adr:
     .skip numdots*4*3           ; {doyx, doty, dotr}
+.endif
 
 ; ******************************************************************
 
@@ -967,7 +978,7 @@ stack_base_no_adr:
 .if _UnrollPlotCode
 ; ******************************************************************
 premult_sine_tables_no_adr:
-    .skip 512*2*4*(radius+1)    ; double precision
+    .skip 256*2*4*(radius+1)
 
 unrolled_code_no_adr:
 
