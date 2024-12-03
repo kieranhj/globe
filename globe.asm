@@ -34,9 +34,14 @@
 .equ _UnrollPlotCode,       1
 .equ _EvenYDistribution,    1
 .equ _Mode12,               1
+.equ _CopyAndFlip,          0           ; Looks a bit meh.
 
 .if _UnrollPlotCode
+.if _CopyAndFlip
+.equ numdots,               7000
+.else
 .equ numdots,               8192
+.endif
 .else
 .equ numdots,               2048        ; cf. 160 on 6502 @ 2MHz!
 .endif
@@ -123,20 +128,25 @@ main:
 .1:
     str r1, scr_bank
 
+.if _CopyAndFlip
+    ldr r12, screen_addr
+    str r12, prev_screen_addr
+.endif
+
     ; CLS buffer N
     mov r0, #OSByte_WriteVDUBank
     swi OS_Byte
     mov r0, #12
     SWI OS_WriteC
 
+    ; Get base address of screen buffer we're writing to
+
+    bl get_screen_addr
+
     ldr r1, scr_bank
     add r1, r1, #1
     cmp r1, #Screen_Banks
     ble .1
-
-    ; Get base address of screen buffer we're writing to
-
-    bl get_screen_addr
 
     ; Set 16 colour palette
 
@@ -281,6 +291,30 @@ plotdotloop:
     add r8, r8, r7
     str r8, angle
 
+.if _CopyAndFlip
+    .if debugrasters
+    mov r0, #24             ; border
+    mov r4, #0x0000ff00     ; green
+    bl pal_set_col
+    .endif
+
+    ldr r11, prev_screen_addr   ; source
+    str r12, prev_screen_addr   ; dest
+
+    add r11, r11, #127*Screen_Stride    ; source
+    add r12, r12, #128*Screen_Stride    ; dest
+
+    mov r10, #Screen_Height/2
+copyloop:
+    .rept Screen_Stride/40
+    ldmia r11!, {r0-r9}     ; 40 bytes
+    stmia r12!, {r0-r9}     ; 40 bytes
+    .endr
+    sub r11, r11, #2*Screen_Stride
+    subs r10, r10, #1
+    bne copyloop
+.endif
+
     ; Set next display buffer from vsync
 
     ldr r1, scr_bank
@@ -335,7 +369,11 @@ plotdotloop:
     mov r8, r0
     mov r9, r0
 
+.if _CopyAndFlip
+    mov r10, #Screen_Height/2
+.else
     mov r10, #Screen_Height
+.endif
 clsloop:
     .rept Screen_Stride/40
     stmia r12!, {r0-r9}     ; 40 bytes
@@ -475,6 +513,11 @@ scr_bank:
 
 screen_addr:
     .long 0                     ; Address of the current VIDC screen bank being written to
+
+.if _CopyAndFlip
+prev_screen_addr:
+    .long 0
+.endif
 
 angle:
     .long 0                     ; {s15.16}
@@ -834,7 +877,6 @@ MakeUnrolled:
     ldr r9, sinus_table_p
 
     mov r8, #-1<<24         ; iterate x over [-1,1]         {s1.24}
-    add r8, r8, #1<<24/numdots   ;                          {s1.16}
 .3:
     ; Calculate doty
 
@@ -918,7 +960,11 @@ MakeUnrolled:
 
     stmia r12!, {r1-r4}          ; write 5 words
 
+.if _CopyAndFlip
+    add r8, r8, #1<<24/(numdots) ;                          {s1.16}
+.else
     add r8, r8, #2<<24/(numdots) ;                          {s1.16}
+.endif
     subs r11, r11, #1
     bne .3
 
@@ -930,10 +976,11 @@ MakeUnrolled:
     ldr pc, [sp], #4
 
 unrolled_snippet:
-    add r1, r9, #2 * 2048     ; sin_table_for_y + angle (2*512 entries)
+    add r1, r9, #2 * 2048       ; sin_table_for_y + angle (2*512 entries)
     ldr r5, [r1, #0]            ; xpos<<16 | colour
-    add r3, r12, #255 * 256
-    add r3, r3, #255 * 64
+    ; Doh! TODO: Step R13 (line ptr) optionally as sorted top to bottom.
+    add r3, r12, #255 * 256     ; * 320 can be a single instruction provided 
+    add r3, r3, #255 * 64       ;   y not more than 6 bits apart.
     strb r5, [r3, r5, lsr #16]
     mov pc, lr
 .endif
