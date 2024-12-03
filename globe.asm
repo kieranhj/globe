@@ -34,11 +34,12 @@
 .equ _UnrollPlotCode,       1
 .equ _EvenYDistribution,    1
 .equ _Mode12,               1
-.equ _CopyAndFlip,          0           ; Looks a bit meh.
+.equ _CopyAndFlip,          1           ; Looks a bit meh.
+.equ _AddRandBits,          0
 
 .if _UnrollPlotCode
 .if _CopyAndFlip
-.equ numdots,               7000
+.equ numdots,               9216        ; *2 :)
 .else
 .equ numdots,               11264
 .endif
@@ -843,10 +844,13 @@ MakeUnrolled:
     mul r1, r5, r0                  ; radius*sin(x)         {s8.16}
 
     ; Add a few bits of randomness to reduce aliasing.
-
+.if _AddRandBits
     bl rnd                          ; R0=rand(MAX_UINT)     {32.0}
     ; Trashes R3, R4
     add r0, r1, r0, asr #16         ; add 16 bits of rnd [+-1.0]
+.else
+    mov r0, r1
+.endif
 
     mov r0, r0, asr #16             ; {s8.0}
     add r0, r0, #centrex            ; {9.0}
